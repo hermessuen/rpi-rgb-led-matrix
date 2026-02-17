@@ -2,9 +2,12 @@
 """
 L Train Times + SMS -> RGB Matrix Display
 
-Shows next L train arrivals at Bedford Ave (both directions) on a 32x16
-RGB LED matrix. When an SMS arrives via Twilio, shows it for 30 seconds,
-then switches back to train times.
+Shows next L train at Bedford Ave by flashing between Manhattan-bound and
+Brooklyn-bound arrival times on a 32x16 RGB LED matrix. When an SMS arrives
+via Twilio, scrolls it for 30 seconds, then switches back to train times.
+
+Uses text-example (reads from stdin) for static train display and
+text-scroller for scrolling SMS.
 
 Usage:
     sudo python3 sms_display.py --ngrok-authtoken <TOKEN>
@@ -18,6 +21,7 @@ import subprocess
 import argparse
 import threading
 import time
+
 from flask import Flask, request, jsonify
 from twilio.twiml.messaging_response import MessagingResponse
 from pyngrok import ngrok
@@ -34,8 +38,9 @@ app = Flask(__name__)
 
 BEDFORD_N = "L08N"  # to Manhattan (8 Av)
 BEDFORD_S = "L08S"  # to Brooklyn (Canarsie)
-POLL_INTERVAL = 60  # seconds
-SMS_DURATION = 30   # seconds
+POLL_INTERVAL = 60  # seconds between API fetches
+FLASH_INTERVAL = 3  # seconds each direction is shown
+SMS_DURATION = 30    # seconds to show SMS
 
 _lock = threading.Lock()
 _display_proc = None
@@ -44,6 +49,8 @@ _sms_timer = None
 _train_lines = ("Loading...", "")
 _config = {}
 
+
+# ── Display helpers ──────────────────────────────────────────────────────────
 
 def _kill_display():
     global _display_proc
@@ -56,13 +63,17 @@ def _kill_display():
     _display_proc = None
 
 
-def _show_static(line1, line2=""):
-    """Show two static lines using static_display.py."""
+def _start_text_example():
+    """Start a text-example process and return it. Reads from stdin."""
     global _display_proc
     _kill_display()
-    script = os.path.join(_config["utils_dir"], "static_display.py")
-    cmd = [sys.executable, script, line1, line2]
-    _display_proc = subprocess.Popen(cmd)
+    repo_dir = os.path.dirname(_config["utils_dir"])
+    text_example = os.path.join(repo_dir, "examples-api-use", "text-example")
+    font = os.path.join(repo_dir, "fonts", "4x6.bdf")
+    cmd = [text_example, "-f", font, "--led-rows=16", "--led-cols=32"]
+    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
+    _display_proc = proc
+    return proc
 
 
 def _show_scroll(text):
@@ -82,7 +93,7 @@ def _show_scroll(text):
 # ── L train fetching ────────────────────────────────────────────────────────
 
 def _fetch_train_times():
-    """Returns (line1, line2) tuple for static display."""
+    """Returns (manhattan_str, brooklyn_str) tuple."""
     if not HAS_GTFS:
         return ("No GTFS", "")
     try:
@@ -117,24 +128,85 @@ def _fetch_train_times():
         return ("L error", "")
 
 
-def _train_loop():
-    global _train_lines
-    while True:
-        lines = _fetch_train_times()
+def _interruptible_sleep(seconds):
+    """Sleep in small increments, returning True if mode changed to non-train."""
+    steps = int(seconds / 0.5)
+    for _ in range(steps):
         with _lock:
-            _train_lines = lines
-            if _mode == "train":
-                print(f"   Train: {lines[0]} / {lines[1]}")
-                _show_static(lines[0], lines[1])
-        time.sleep(POLL_INTERVAL)
+            if _mode != "train":
+                return True
+        time.sleep(0.5)
+    return False
+
+
+def _train_loop():
+    """Background thread: fetch train times and flash between directions."""
+    global _train_lines
+    last_fetch = 0
+    proc = None
+
+    while True:
+        # Check mode
+        with _lock:
+            if _mode != "train":
+                proc = None
+                time.sleep(1)
+                continue
+
+        # Fetch new times periodically
+        now_time = time.time()
+        if now_time - last_fetch >= POLL_INTERVAL:
+            lines = _fetch_train_times()
+            with _lock:
+                _train_lines = lines
+            last_fetch = now_time
+            print(f"   Train: {_train_lines[0]} / {_train_lines[1]}")
+
+        # Start text-example if not running
+        if proc is None or proc.poll() is not None:
+            with _lock:
+                if _mode != "train":
+                    continue
+                proc = _start_text_example()
+
+        # Flash line 1 (Manhattan)
+        try:
+            proc.stdin.write(f"{_train_lines[0]}\n".encode())
+            proc.stdin.flush()
+        except (BrokenPipeError, OSError):
+            proc = None
+            continue
+
+        if _interruptible_sleep(FLASH_INTERVAL):
+            proc = None
+            continue
+
+        # Clear and flash line 2 (Brooklyn)
+        try:
+            proc.stdin.write(b"\n")
+            proc.stdin.write(f"{_train_lines[1]}\n".encode())
+            proc.stdin.flush()
+        except (BrokenPipeError, OSError):
+            proc = None
+            continue
+
+        if _interruptible_sleep(FLASH_INTERVAL):
+            proc = None
+            continue
+
+        # Clear for next cycle
+        try:
+            proc.stdin.write(b"\n")
+            proc.stdin.flush()
+        except (BrokenPipeError, OSError):
+            proc = None
 
 
 def _switch_to_train():
     global _mode
     with _lock:
         _mode = "train"
-        print(f"   Back to trains: {_train_lines[0]} / {_train_lines[1]}")
-        _show_static(_train_lines[0], _train_lines[1])
+        print(f"   Back to trains")
 
 
 # ── Twilio webhook ──────────────────────────────────────────────────────────
@@ -208,10 +280,16 @@ def main():
     repo_dir = os.path.dirname(utils_dir)
     _config["utils_dir"] = utils_dir
 
+    # Verify binaries
+    text_example = os.path.join(repo_dir, "examples-api-use", "text-example")
     scroller_bin = os.path.join(utils_dir, "text-scroller")
     font_path = os.path.join(repo_dir, "fonts", "4x6.bdf")
+
+    if not os.access(text_example, os.X_OK):
+        print("WARNING: text-example not found.")
+        print(f"         Run 'make -C examples-api-use' in the repo root.\n")
     if not os.access(scroller_bin, os.X_OK):
-        print("WARNING: text-scroller not found. Run 'make' in utils/ first.\n")
+        print("WARNING: text-scroller not found. Run 'make' in utils/.\n")
     if not os.path.isfile(font_path):
         print(f"WARNING: Font not found: {font_path}\n")
 
@@ -234,6 +312,7 @@ def main():
     print(f"  Public:   {public_url}")
     print(f"  Webhook:  {webhook_url}")
     print(f"  Stop:     Bedford Av (L08N + L08S)")
+    print(f"  Flash:    {FLASH_INTERVAL}s per direction")
     print(f"  Poll:     every {POLL_INTERVAL}s")
     print(f"  SMS:      overrides for {SMS_DURATION}s")
     print(f"  Matrix:   32x16, font 4x6.bdf")
