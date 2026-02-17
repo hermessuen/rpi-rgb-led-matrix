@@ -63,7 +63,7 @@ def _build_command(text):
     if not os.path.isfile(scroller) or not os.access(scroller, os.X_OK):
         return None
     font = os.path.join(repo_dir, "fonts", "4x6.bdf")
-    return [scroller, "-f", font, "--led-rows=16", "--led-cols=32", text]
+    return [scroller, "-f", font, "--led-rows=16", "--led-cols=32", "-s", "3", text]
 
 
 def _update_display(text):
