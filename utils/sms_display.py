@@ -92,12 +92,29 @@ def _show_scroll(text):
 
 # ── L train fetching ────────────────────────────────────────────────────────
 
+def _fetch_with_timeout(timeout=15):
+    """Fetch NYCTFeed in a thread with a timeout."""
+    result = [None]
+    def _do_fetch():
+        result[0] = NYCTFeed("L")
+    t = threading.Thread(target=_do_fetch)
+    t.start()
+    t.join(timeout)
+    if t.is_alive():
+        print("   MTA API timed out")
+        return None
+    return result[0]
+
+
 def _fetch_train_times():
     """Returns (manhattan_str, brooklyn_str) tuple."""
     if not HAS_GTFS:
         return ("No GTFS", "")
     try:
-        feed = NYCTFeed("L")
+        print("   Fetching L train data...")
+        feed = _fetch_with_timeout(15)
+        if feed is None:
+            return ("L timeout", "")
 
         manhattan_trains = feed.filter_trips(line_id="L", headed_for_stop_id=BEDFORD_N, underway=True)
         brooklyn_trains = feed.filter_trips(line_id="L", headed_for_stop_id=BEDFORD_S, underway=True)
@@ -121,6 +138,7 @@ def _fetch_train_times():
         m_str = "now" if m == 0 else f"{m} min" if m is not None else "--"
         b_str = "now" if b == 0 else f"{b} min" if b is not None else "--"
 
+        print(f"   Got: Manh {m_str} / Bkln {b_str}")
         return (f"Manh {m_str}", f"Bkln {b_str}")
 
     except Exception as e:
@@ -144,14 +162,16 @@ def _train_loop():
     global _train_lines
     last_fetch = 0
     proc = None
+    print("[train_loop] started")
 
     while True:
         # Check mode
         with _lock:
-            if _mode != "train":
-                proc = None
-                time.sleep(1)
-                continue
+            current_mode = _mode
+        if current_mode != "train":
+            proc = None
+            time.sleep(1)
+            continue
 
         # Fetch new times periodically
         now_time = time.time()
