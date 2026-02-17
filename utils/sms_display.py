@@ -41,7 +41,7 @@ _lock = threading.Lock()
 _display_proc = None
 _mode = "train"
 _sms_timer = None
-_train_text = "Loading..."
+_train_lines = ("Loading...", "")
 _config = {}
 
 
@@ -56,29 +56,35 @@ def _kill_display():
     _display_proc = None
 
 
-def _build_command(text):
+def _show_static(line1, line2=""):
+    """Show two static lines using static_display.py."""
+    global _display_proc
+    _kill_display()
+    script = os.path.join(_config["utils_dir"], "static_display.py")
+    cmd = [sys.executable, script, line1, line2]
+    _display_proc = subprocess.Popen(cmd)
+
+
+def _show_scroll(text):
+    """Show scrolling text using text-scroller."""
+    global _display_proc
+    _kill_display()
     utils_dir = _config["utils_dir"]
     repo_dir = os.path.dirname(utils_dir)
     scroller = os.path.join(utils_dir, "text-scroller")
     if not os.path.isfile(scroller) or not os.access(scroller, os.X_OK):
-        return None
+        return
     font = os.path.join(repo_dir, "fonts", "4x6.bdf")
-    return [scroller, "-f", font, "--led-rows=16", "--led-cols=32", "-s", "3", text]
-
-
-def _update_display(text):
-    global _display_proc
-    _kill_display()
-    cmd = _build_command(text)
-    if cmd:
-        _display_proc = subprocess.Popen(cmd)
+    cmd = [scroller, "-f", font, "--led-rows=16", "--led-cols=32", "-s", "3", text]
+    _display_proc = subprocess.Popen(cmd)
 
 
 # ── L train fetching ────────────────────────────────────────────────────────
 
 def _fetch_train_times():
+    """Returns (line1, line2) tuple for static display."""
     if not HAS_GTFS:
-        return "Install nyct-gtfs"
+        return ("No GTFS", "")
     try:
         feed = NYCTFeed("L")
 
@@ -101,25 +107,25 @@ def _fetch_train_times():
         m = next_arrival(manhattan_trains, BEDFORD_N)
         b = next_arrival(brooklyn_trains, BEDFORD_S)
 
-        m_str = "now" if m == 0 else f"{m}m" if m is not None else "--"
-        b_str = "now" if b == 0 else f"{b}m" if b is not None else "--"
+        m_str = "now" if m == 0 else f"{m} min" if m is not None else "--"
+        b_str = "now" if b == 0 else f"{b} min" if b is not None else "--"
 
-        return f"Bedford Av L | Manh: {m_str} | Bklyn: {b_str}"
+        return (f"Manh {m_str}", f"Bkln {b_str}")
 
     except Exception as e:
         print(f"   Error fetching trains: {e}")
-        return "L train: update failed"
+        return ("L error", "")
 
 
 def _train_loop():
-    global _train_text
+    global _train_lines
     while True:
-        new_text = _fetch_train_times()
+        lines = _fetch_train_times()
         with _lock:
-            _train_text = new_text
+            _train_lines = lines
             if _mode == "train":
-                print(f"   Train: {new_text}")
-                _update_display(new_text)
+                print(f"   Train: {lines[0]} / {lines[1]}")
+                _show_static(lines[0], lines[1])
         time.sleep(POLL_INTERVAL)
 
 
@@ -127,8 +133,8 @@ def _switch_to_train():
     global _mode
     with _lock:
         _mode = "train"
-        print(f"   Back to trains: {_train_text}")
-        _update_display(_train_text)
+        print(f"   Back to trains: {_train_lines[0]} / {_train_lines[1]}")
+        _show_static(_train_lines[0], _train_lines[1])
 
 
 # ── Twilio webhook ──────────────────────────────────────────────────────────
@@ -150,7 +156,7 @@ def incoming_sms():
         _mode = "sms"
         if _sms_timer:
             _sms_timer.cancel()
-        _update_display(body)
+        _show_scroll(body)
         _sms_timer = threading.Timer(SMS_DURATION, _switch_to_train)
         _sms_timer.start()
 
