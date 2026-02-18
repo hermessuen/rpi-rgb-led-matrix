@@ -2,9 +2,9 @@
 """
 L Train Times + SMS -> RGB Matrix Display
 
-Shows next L train at Bedford Ave by flashing between Manhattan-bound and
-Brooklyn-bound arrival times on a 32x16 RGB LED matrix. When an SMS arrives
-via Twilio, scrolls it for 30 seconds, then switches back to train times.
+Shows next L trains at Bedford Ave (both directions stacked) on a 32x16
+RGB LED matrix. When an SMS arrives via Twilio, scrolls it for 30 seconds,
+then switches back to train times.
 
 Uses text-example (reads from stdin) for static train display and
 text-scroller for scrolling SMS.
@@ -39,8 +39,8 @@ app = Flask(__name__)
 BEDFORD_N = "L08N"  # to Manhattan (8 Av)
 BEDFORD_S = "L08S"  # to Brooklyn (Canarsie)
 POLL_INTERVAL = 60  # seconds between API fetches
-FLASH_INTERVAL = 3  # seconds each direction is shown
 SMS_DURATION = 30    # seconds to show SMS
+STARTUP_DELAY = 0.5  # seconds to wait after starting text-example
 
 _lock = threading.Lock()
 _display_proc = None
@@ -107,7 +107,7 @@ def _fetch_with_timeout(timeout=15):
 
 
 def _fetch_train_times():
-    """Returns (manhattan_str, brooklyn_str) tuple."""
+    """Returns (brooklyn_str, manhattan_str) for stacked display."""
     if not HAS_GTFS:
         return ("No GTFS", "")
     try:
@@ -121,7 +121,7 @@ def _fetch_train_times():
 
         now = time.time()
 
-        def next_arrival(trips, stop_id):
+        def next_arrivals(trips, stop_id, count=2):
             times = []
             for trip in trips:
                 for stu in trip.stop_time_updates:
@@ -130,16 +130,21 @@ def _fetch_train_times():
                         if mins >= 0:
                             times.append(mins)
             times.sort()
-            return times[0] if times else None
+            return times[:count]
 
-        m = next_arrival(manhattan_trains, BEDFORD_N)
-        b = next_arrival(brooklyn_trains, BEDFORD_S)
+        m_times = next_arrivals(manhattan_trains, BEDFORD_N)
+        b_times = next_arrivals(brooklyn_trains, BEDFORD_S)
 
-        m_str = "now" if m == 0 else f"{m} min" if m is not None else "--"
-        b_str = "now" if b == 0 else f"{b} min" if b is not None else "--"
+        def fmt(times):
+            if not times:
+                return "--"
+            return ",".join(str(t) for t in times)
 
-        print(f"   Got: Manh {m_str} / Bkln {b_str}")
-        return (f"Manh {m_str}", f"Bkln {b_str}")
+        bk_str = f"BK:{fmt(b_times)}"
+        mn_str = f"MAN:{fmt(m_times)}"
+
+        print(f"   Got: {bk_str} / {mn_str}")
+        return (bk_str, mn_str)
 
     except Exception as e:
         print(f"   Error fetching trains: {e}")
@@ -158,14 +163,13 @@ def _interruptible_sleep(seconds):
 
 
 def _train_loop():
-    """Background thread: fetch train times and flash between directions."""
+    """Background thread: fetch train times and display both directions stacked."""
     global _train_lines
     last_fetch = 0
     proc = None
     print("[train_loop] started")
 
     while True:
-        # Check mode
         with _lock:
             current_mode = _mode
         if current_mode != "train":
@@ -173,7 +177,6 @@ def _train_loop():
             time.sleep(1)
             continue
 
-        # Fetch new times periodically
         now_time = time.time()
         if now_time - last_fetch >= POLL_INTERVAL:
             lines = _fetch_train_times()
@@ -182,39 +185,26 @@ def _train_loop():
             last_fetch = now_time
             print(f"   Train: {_train_lines[0]} / {_train_lines[1]}")
 
-        # Start text-example if not running
         if proc is None or proc.poll() is not None:
             with _lock:
                 if _mode != "train":
                     continue
                 proc = _start_text_example()
+            time.sleep(STARTUP_DELAY)
 
-        # Flash line 1 (Manhattan)
+        # Write both lines stacked, then empty line to clear for next refresh
         try:
-            proc.stdin.write(f"{_train_lines[0]}\n".encode())
+            proc.stdin.write(f"{_train_lines[0]}\n{_train_lines[1]}\n".encode())
             proc.stdin.flush()
         except (BrokenPipeError, OSError):
             proc = None
             continue
 
-        if _interruptible_sleep(FLASH_INTERVAL):
+        if _interruptible_sleep(POLL_INTERVAL):
             proc = None
             continue
 
-        # Clear and flash line 2 (Brooklyn)
-        try:
-            proc.stdin.write(b"\n")
-            proc.stdin.write(f"{_train_lines[1]}\n".encode())
-            proc.stdin.flush()
-        except (BrokenPipeError, OSError):
-            proc = None
-            continue
-
-        if _interruptible_sleep(FLASH_INTERVAL):
-            proc = None
-            continue
-
-        # Clear for next cycle
+        # Clear screen before redrawing with fresh data
         try:
             proc.stdin.write(b"\n")
             proc.stdin.flush()
@@ -332,7 +322,7 @@ def main():
     print(f"  Public:   {public_url}")
     print(f"  Webhook:  {webhook_url}")
     print(f"  Stop:     Bedford Av (L08N + L08S)")
-    print(f"  Flash:    {FLASH_INTERVAL}s per direction")
+    print(f"  Display:  Both directions stacked (next 2 trains)")
     print(f"  Poll:     every {POLL_INTERVAL}s")
     print(f"  SMS:      overrides for {SMS_DURATION}s")
     print(f"  Matrix:   32x16, font 4x6.bdf")
