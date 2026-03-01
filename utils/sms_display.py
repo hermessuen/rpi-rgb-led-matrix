@@ -140,8 +140,8 @@ def _fetch_train_times():
                 return "--"
             return ",".join(str(t) for t in times)
 
-        bk_str = f"BK:{fmt(b_times)}"
-        mn_str = f"MAN:{fmt(m_times)}"
+        bk_str = f"B:{fmt(b_times)}"
+        mn_str = f"M:{fmt(m_times)}"
 
         print(f"   Got: {bk_str} / {mn_str}")
         return (bk_str, mn_str)
