@@ -127,7 +127,7 @@ def _fetch_train_times():
                 for stu in trip.stop_time_updates:
                     if stu.stop_id == stop_id and stu.arrival:
                         mins = int((stu.arrival.timestamp() - now) / 60)
-                        if mins >= 0:
+                        if mins > 6:  # only trains over 6 minutes away
                             times.append(mins)
             times.sort()
             return times[:count]
