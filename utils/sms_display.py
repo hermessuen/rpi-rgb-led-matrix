@@ -70,7 +70,8 @@ def _start_text_example():
     repo_dir = os.path.dirname(_config["utils_dir"])
     text_example = os.path.join(repo_dir, "examples-api-use", "text-example")
     font = os.path.join(repo_dir, "fonts", "4x6.bdf")
-    cmd = [text_example, "-f", font, "--led-rows=16", "--led-cols=32"]
+    cmd = [text_example, "-f", font, "--led-rows=16", "--led-cols=32",
+           f"--led-brightness={_config['brightness']}"]
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
     _display_proc = proc
     return proc
@@ -86,7 +87,8 @@ def _show_scroll(text):
     if not os.path.isfile(scroller) or not os.access(scroller, os.X_OK):
         return
     font = os.path.join(repo_dir, "fonts", "4x6.bdf")
-    cmd = [scroller, "-f", font, "--led-rows=16", "--led-cols=32", "-s", "3", text]
+    cmd = [scroller, "-f", font, "--led-rows=16", "--led-cols=32",
+           f"--led-brightness={_config['brightness']}", "-s", "3", text]
     _display_proc = subprocess.Popen(cmd)
 
 
@@ -284,11 +286,14 @@ def main():
                         help="Local HTTP port (default: 5000)")
     parser.add_argument("--ngrok-authtoken",
                         help="ngrok auth token (or set NGROK_AUTHTOKEN env var)")
+    parser.add_argument("--brightness", type=int, default=50,
+                        help="LED brightness 1-100 (default: 50)")
     args = parser.parse_args()
 
     utils_dir = os.path.dirname(os.path.abspath(__file__))
     repo_dir = os.path.dirname(utils_dir)
     _config["utils_dir"] = utils_dir
+    _config["brightness"] = max(1, min(100, args.brightness))
 
     # Verify binaries
     text_example = os.path.join(repo_dir, "examples-api-use", "text-example")
