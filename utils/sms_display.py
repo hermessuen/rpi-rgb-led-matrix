@@ -21,6 +21,7 @@ import subprocess
 import argparse
 import threading
 import time
+import ctypes
 
 from flask import Flask, request, jsonify
 from twilio.twiml.messaging_response import MessagingResponse
@@ -52,6 +53,19 @@ _config = {}
 
 # ── Display helpers ──────────────────────────────────────────────────────────
 
+def _set_pdeathsig():
+    """Run in the forked child (Linux): ask the kernel to send SIGTERM to this
+    process when the parent (python) dies. Guarantees a renderer can never be
+    orphaned holding the LED matrix, even if python is hard-killed. Must never
+    raise — a failing preexec_fn would make Popen fail in the parent."""
+    try:
+        libc = ctypes.CDLL("libc.so.6", use_errno=True)
+        PR_SET_PDEATHSIG = 1
+        libc.prctl(PR_SET_PDEATHSIG, signal.SIGTERM)
+    except Exception:
+        pass
+
+
 def _kill_display():
     global _display_proc
     if _display_proc and _display_proc.poll() is None:
@@ -77,7 +91,7 @@ def _start_train_display():
     font = os.path.join(repo_dir, "fonts", "4x6.bdf")
     cmd = [train_display, "-f", font, "--led-rows=16", "--led-cols=32",
            f"--led-brightness={_config['brightness']}"]
-    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
+    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, preexec_fn=_set_pdeathsig)
     _display_proc = proc
     return proc
 
@@ -94,7 +108,7 @@ def _show_scroll(text):
     font = os.path.join(repo_dir, "fonts", "4x6.bdf")
     cmd = [scroller, "-f", font, "--led-rows=16", "--led-cols=32",
            f"--led-brightness={_config['brightness']}", "-s", "3", text]
-    _display_proc = subprocess.Popen(cmd)
+    _display_proc = subprocess.Popen(cmd, preexec_fn=_set_pdeathsig)
 
 
 # ── L train fetching ────────────────────────────────────────────────────────
@@ -277,11 +291,24 @@ def health():
 # ── Main ────────────────────────────────────────────────────────────────────
 
 def _cleanup(signum, frame):
-    print("\nShutting down...")
-    with _lock:
+    print("\nShutting down...", flush=True)
+    # Hard fallback: if graceful cleanup wedges (e.g. ngrok.kill() blocks), this
+    # daemon timer force-exits the whole process so Ctrl-C can never get stuck.
+    watchdog = threading.Timer(6.0, lambda: os._exit(0))
+    watchdog.daemon = True
+    watchdog.start()
+    # Best-effort, lock-free cleanup. We deliberately do NOT take _lock here: a
+    # request thread could be holding it, which would deadlock the shutdown.
+    # The renderer has PR_SET_PDEATHSIG, so it dies with us regardless.
+    try:
         _kill_display()
-    ngrok.kill()
-    sys.exit(0)
+    except Exception:
+        pass
+    try:
+        ngrok.kill()
+    except Exception:
+        pass
+    os._exit(0)
 
 
 def main():
