@@ -1,8 +1,8 @@
 include ../config.mk
 
 CXXFLAGS=-O3 $(CPU_ARCH_FLAGS) $(LTO_FLAGS) -W -Wall -Wextra -Wno-unused-parameter -D_FILE_OFFSET_BITS=64
-OBJECTS=led-image-viewer.o text-scroller.o
-BINARIES=led-image-viewer text-scroller
+OBJECTS=led-image-viewer.o text-scroller.o train-display.o
+BINARIES=led-image-viewer text-scroller train-display
 
 OPTIONAL_OBJECTS=video-viewer.o
 OPTIONAL_BINARIES=video-viewer
@@ -31,6 +31,9 @@ $(RGB_LIBRARY): FORCE
 
 text-scroller: text-scroller.o $(RGB_LIBRARY)
 	$(CXX) $(CXXFLAGS) text-scroller.o -o $@ $(LDFLAGS) $(RGB_LDFLAGS)
+
+train-display: train-display.o $(RGB_LIBRARY)
+	$(CXX) $(CXXFLAGS) train-display.o -o $@ $(LDFLAGS) $(RGB_LDFLAGS)
 
 led-image-viewer: led-image-viewer.o $(RGB_LIBRARY)
 	$(CXX) $(CXXFLAGS) led-image-viewer.o -o $@ $(LDFLAGS) $(RGB_LDFLAGS) $(MAGICK_LDFLAGS)

@@ -6,8 +6,8 @@ Shows next L trains at Bedford Ave (both directions stacked) on a 32x16
 RGB LED matrix. When an SMS arrives via Twilio, scrolls it for 30 seconds,
 then switches back to train times.
 
-Uses text-example (reads from stdin) for static train display and
-text-scroller for scrolling SMS.
+Uses train-display (double-buffered, reads frames from stdin) for the
+flicker-free train display and text-scroller for scrolling SMS.
 
 Usage:
     sudo python3 sms_display.py --ngrok-authtoken <TOKEN>
@@ -63,14 +63,19 @@ def _kill_display():
     _display_proc = None
 
 
-def _start_text_example():
-    """Start a text-example process and return it. Reads from stdin."""
+def _start_train_display():
+    """Start the double-buffered train-display process. Reads frames from stdin.
+
+    Each frame is one line: "row0<TAB>row1\\n". Updates are flicker-free
+    (SwapOnVSync), so we only push a frame when the data changes.
+    """
     global _display_proc
     _kill_display()
-    repo_dir = os.path.dirname(_config["utils_dir"])
-    text_example = os.path.join(repo_dir, "examples-api-use", "text-example")
+    utils_dir = _config["utils_dir"]
+    repo_dir = os.path.dirname(utils_dir)
+    train_display = os.path.join(utils_dir, "train-display")
     font = os.path.join(repo_dir, "fonts", "4x6.bdf")
-    cmd = [text_example, "-f", font, "--led-rows=16", "--led-cols=32",
+    cmd = [train_display, "-f", font, "--led-rows=16", "--led-cols=32",
            f"--led-brightness={_config['brightness']}"]
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
     _display_proc = proc
@@ -165,9 +170,15 @@ def _interruptible_sleep(seconds):
 
 
 def _train_loop():
-    """Background thread: fetch train times and display both directions stacked."""
+    """Background thread: fetch train times and display both directions stacked.
+
+    The renderer (train-display) holds the last frame on the panel and updates
+    flicker-free, so we only push a new frame when the displayed text actually
+    changes (new data, or after a (re)start of the renderer).
+    """
     global _train_lines
     last_fetch = 0
+    last_pushed = None
     proc = None
     print("[train_loop] started")
 
@@ -176,7 +187,8 @@ def _train_loop():
             current_mode = _mode
         if current_mode != "train":
             proc = None
-            time.sleep(1)
+            last_pushed = None
+            time.sleep(0.5)
             continue
 
         now_time = time.time()
@@ -191,27 +203,23 @@ def _train_loop():
             with _lock:
                 if _mode != "train":
                     continue
-                proc = _start_text_example()
+                proc = _start_train_display()
+            last_pushed = None  # force a fresh push after (re)start
             time.sleep(STARTUP_DELAY)
 
-        # Write both lines stacked, then empty line to clear for next refresh
-        try:
-            proc.stdin.write(f"{_train_lines[0]}\n{_train_lines[1]}\n".encode())
-            proc.stdin.flush()
-        except (BrokenPipeError, OSError):
-            proc = None
-            continue
+        # Push a frame only when the text changed (flicker-free, no clear needed).
+        frame = f"{_train_lines[0]}\t{_train_lines[1]}\n"
+        if frame != last_pushed:
+            try:
+                proc.stdin.write(frame.encode())
+                proc.stdin.flush()
+                last_pushed = frame
+            except (BrokenPipeError, OSError):
+                proc = None
+                continue
 
-        if _interruptible_sleep(POLL_INTERVAL):
-            proc = None
-            continue
-
-        # Clear screen before redrawing with fresh data
-        try:
-            proc.stdin.write(b"\n")
-            proc.stdin.flush()
-        except (BrokenPipeError, OSError):
-            proc = None
+        # Wake up promptly on mode change; re-evaluate poll timing each second.
+        _interruptible_sleep(1)
 
 
 def _switch_to_train():
@@ -296,13 +304,12 @@ def main():
     _config["brightness"] = max(1, min(100, args.brightness))
 
     # Verify binaries
-    text_example = os.path.join(repo_dir, "examples-api-use", "text-example")
+    train_display = os.path.join(utils_dir, "train-display")
     scroller_bin = os.path.join(utils_dir, "text-scroller")
     font_path = os.path.join(repo_dir, "fonts", "4x6.bdf")
 
-    if not os.access(text_example, os.X_OK):
-        print("WARNING: text-example not found.")
-        print(f"         Run 'make -C examples-api-use' in the repo root.\n")
+    if not os.access(train_display, os.X_OK):
+        print("WARNING: train-display not found. Run 'make' in utils/.\n")
     if not os.access(scroller_bin, os.X_OK):
         print("WARNING: text-scroller not found. Run 'make' in utils/.\n")
     if not os.path.isfile(font_path):
