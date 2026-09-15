@@ -5,7 +5,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this repo is
 
 This is a checkout of the upstream **rpi-rgb-led-matrix** C++ library (Henner Zeller, GPLv2),
-customized to drive a **32x16 RGB LED panel that shows NYC L-train arrival times** at Bedford Av.
+customized to drive a **32x16 RGB LED panel that shows NYC subway arrival times**: Manhattan-bound
+L at Bedford Av and Brooklyn-bound G at Metropolitan Av.
 All of the project-specific work lives in `utils/`; the rest of the tree is the unmodified
 library and its examples.
 
@@ -21,10 +22,12 @@ Hardware/runtime context that the code assumes:
 
 Three pieces in `utils/` form one pipeline:
 
-1. **`subway_display.py`** — Python orchestrator. Polls the MTA GTFS-RT feed (`nyct-gtfs`)
-   every `POLL_INTERVAL` (60s) for L trains at Bedford Av (`L08N` = Manhattan, `L08S` = Brooklyn),
-   keeps the next 2 arrivals **more than 6 minutes out** per direction, formats them as
-   `B:12,8` / `M:3,9`, and feeds them to the renderer. No web server, no ngrok, no Twilio —
+1. **`subway_display.py`** — Python orchestrator. Every `POLL_INTERVAL` (60s) it polls the MTA
+   GTFS-RT feeds (`nyct-gtfs`; the L and G are separate feeds, fetched independently) for one
+   direction per line, configured in `L_ROW` / `G_ROW`: L at Bedford Av toward Manhattan (`L08N`)
+   and G at Metropolitan Av toward Brooklyn (`G29S`). Keeps the next 2 arrivals at least
+   `min_mins` (5) out, formats them as `L:8,14` / `G:5,11`, and feeds them to the renderer.
+   Row colors (L gray, G green) are passed to the renderer as `-C` / `-D` flags. No web server, no ngrok, no Twilio —
    it just fetches and draws. The fetch/draw loop runs in the **main thread** so SIGINT lands
    immediately.
 
@@ -45,7 +48,8 @@ row0<TAB>row1\n
 ```
 
 `train-display` splits on the **first tab**, clears an offscreen `FrameCanvas`, draws `row0` at
-the top and `row1` one font-height below, then `SwapOnVSync()`. An empty line clears the screen.
+the top (color `-C`) and `row1` one font-height below (color `-D`), then `SwapOnVSync()`.
+At 4x6 each row fits 8 characters. An empty line clears the screen.
 If you change the separator, the row count, or the layout, you must change **both** files.
 
 ### Design decisions that span files (don't undo these)

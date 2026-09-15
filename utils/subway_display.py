@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-L Train Times -> RGB Matrix Display
+L + G Train Times -> RGB Matrix Display
 
-Shows the next L trains at Bedford Av (both directions stacked) on a 32x16
+Shows the next Manhattan-bound L trains at Bedford Av (gray, top row) and the
+next Brooklyn-bound G trains at Metropolitan Av (green, bottom row) on a 32x16
 RGB LED matrix. Updates flicker-free via the double-buffered `train-display`
 renderer (only pushes a new frame when the times change).
 
@@ -29,8 +30,11 @@ except ImportError:
     print("WARNING: nyct-gtfs not installed.")
     print("         pip3 install nyct-gtfs\n")
 
-BEDFORD_N = "L08N"  # to Manhattan (8 Av)
-BEDFORD_S = "L08S"  # to Brooklyn (Canarsie)
+# One direction per line: (feed/line id, stop id, min minutes out, color r,g,b).
+# Row 0 = L at Bedford Av toward Manhattan (L08S would be toward Canarsie).
+# Row 1 = G at Metropolitan Av toward Brooklyn/Church Av (G29N would be toward Queens).
+L_ROW = ("L", "L08N", 5, "167,169,172")  # MTA L gray
+G_ROW = ("G", "G29S", 5, "108,190,69")   # MTA G green
 POLL_INTERVAL = 60   # seconds between API fetches
 STARTUP_DELAY = 0.5  # seconds to wait after starting the renderer
 
@@ -76,72 +80,65 @@ def _start_train_display():
     repo_dir = os.path.dirname(utils_dir)
     train_display = os.path.join(utils_dir, "train-display")
     font = os.path.join(repo_dir, "fonts", "4x6.bdf")
-    cmd = [train_display, "-f", font, "--led-rows=16", "--led-cols=32",
+    cmd = [train_display, "-f", font, "-C", L_ROW[3], "-D", G_ROW[3],
+           "--led-rows=16", "--led-cols=32",
            f"--led-brightness={_config['brightness']}"]
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, preexec_fn=_set_pdeathsig)
     _display_proc = proc
     return proc
 
 
-# ── L train fetching ────────────────────────────────────────────────────────
+# ── Train fetching ──────────────────────────────────────────────────────────
 
-def _fetch_with_timeout(timeout=15):
+def _fetch_with_timeout(feed_id, timeout=15):
     """Fetch NYCTFeed in a thread with a timeout."""
     result = [None]
     def _do_fetch():
-        result[0] = NYCTFeed("L")
+        result[0] = NYCTFeed(feed_id)
     t = threading.Thread(target=_do_fetch)
     t.start()
     t.join(timeout)
     if t.is_alive():
-        print("   MTA API timed out")
+        print(f"   MTA API timed out ({feed_id})")
         return None
     return result[0]
 
 
-def _fetch_train_times():
-    """Returns (brooklyn_str, manhattan_str) for stacked display."""
-    if not HAS_GTFS:
-        return ("No GTFS", "")
+def _fetch_row(row, count=2):
+    """Returns e.g. "L:8,14" for one (line, stop, min_mins, color) row.
+    Each line is fetched independently so one feed failing doesn't blank the other."""
+    line, stop_id, min_mins, _ = row
     try:
-        print("   Fetching L train data...")
-        feed = _fetch_with_timeout(15)
+        feed = _fetch_with_timeout(line, 15)
         if feed is None:
-            return ("L timeout", "")
+            return f"{line}:err"
 
-        manhattan_trains = feed.filter_trips(line_id="L", headed_for_stop_id=BEDFORD_N, underway=True)
-        brooklyn_trains = feed.filter_trips(line_id="L", headed_for_stop_id=BEDFORD_S, underway=True)
-
+        trips = feed.filter_trips(line_id=line, headed_for_stop_id=stop_id, underway=True)
         now = time.time()
-
-        def next_arrivals(trips, stop_id, count=2):
-            times = []
-            for trip in trips:
-                for stu in trip.stop_time_updates:
-                    if stu.stop_id == stop_id and stu.arrival:
-                        mins = int((stu.arrival.timestamp() - now) / 60)
-                        if mins >= 5:  # only trains 5 or more minutes away
-                            times.append(mins)
-            times.sort()
-            return times[:count]
-
-        m_times = next_arrivals(manhattan_trains, BEDFORD_N)
-        b_times = next_arrivals(brooklyn_trains, BEDFORD_S)
-
-        def fmt(times):
-            if not times:
-                return "--"
-            return ",".join(str(t) for t in times)
-
-        bk_str = f"B:{fmt(b_times)}"
-        mn_str = f"M:{fmt(m_times)}"
-
-        print(f"   Got: {bk_str} / {mn_str}")
-        return (bk_str, mn_str)
+        times = []
+        for trip in trips:
+            for stu in trip.stop_time_updates:
+                if stu.stop_id == stop_id and stu.arrival:
+                    mins = int((stu.arrival.timestamp() - now) / 60)
+                    if mins >= min_mins:
+                        times.append(mins)
+        times.sort()
+        times = times[:count]
+        return f"{line}:{','.join(str(t) for t in times) if times else '--'}"
 
     except Exception as e:
-        print(f"   Error fetching trains: {e}")
-        return ("L error", "")
+        print(f"   Error fetching {line} trains: {e}")
+        return f"{line}:err"
+
+
+def _fetch_train_times():
+    """Returns (l_str, g_str) for stacked display."""
+    if not HAS_GTFS:
+        return ("No GTFS", "")
+    print("   Fetching L + G train data...")
+    rows = (_fetch_row(L_ROW), _fetch_row(G_ROW))
+    print(f"   Got: {rows[0]} / {rows[1]}")
+    return rows
 
 
 # ── Main loop ────────────────────────────────────────────────────────────────
@@ -227,8 +224,9 @@ def main():
     print("=" * 62)
     print("  L Train -> RGB Matrix Display")
     print("=" * 62)
-    print(f"  Stop:       Bedford Av (L08N + L08S)")
-    print(f"  Display:    Both directions stacked (next 2 trains)")
+    print(f"  Row 0:      L at Bedford Av -> Manhattan ({L_ROW[1]}, gray)")
+    print(f"  Row 1:      G at Metropolitan Av -> Brooklyn ({G_ROW[1]}, green)")
+    print(f"  Display:    next 2 trains per row")
     print(f"  Poll:       every {POLL_INTERVAL}s")
     print(f"  Brightness: {_config['brightness']}")
     print(f"  Matrix:     32x16, font 4x6.bdf")

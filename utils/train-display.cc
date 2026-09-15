@@ -38,6 +38,7 @@ static int usage(const char *progname) {
           "\t-y <y-origin>     : Y-origin of first row (Default: 0)\n"
           "\t-S <spacing>      : Spacing pixels between letters (Default: 0)\n"
           "\t-C <r,g,b>        : Text color. Default 255,255,0\n"
+          "\t-D <r,g,b>        : Second-row color. Default: same as -C\n"
           "\n");
   rgb_matrix::PrintMatrixFlags(stderr);
   return 1;
@@ -56,13 +57,15 @@ int main(int argc, char *argv[]) {
   }
 
   Color color(255, 255, 0);
+  Color color1(255, 255, 0);
+  bool color1_set = false;
   const char *bdf_font_file = NULL;
   int x_orig = 0;
   int y_orig = 0;
   int letter_spacing = 0;
 
   int opt;
-  while ((opt = getopt(argc, argv, "x:y:f:C:S:")) != -1) {
+  while ((opt = getopt(argc, argv, "x:y:f:C:D:S:")) != -1) {
     switch (opt) {
     case 'x': x_orig = atoi(optarg); break;
     case 'y': y_orig = atoi(optarg); break;
@@ -74,10 +77,18 @@ int main(int argc, char *argv[]) {
         return usage(argv[0]);
       }
       break;
+    case 'D':
+      if (!parseColor(&color1, optarg)) {
+        fprintf(stderr, "Invalid color spec: %s\n", optarg);
+        return usage(argv[0]);
+      }
+      color1_set = true;
+      break;
     default:
       return usage(argv[0]);
     }
   }
+  if (!color1_set) color1 = color;
 
   if (bdf_font_file == NULL) {
     fprintf(stderr, "Need to specify BDF font-file with -f\n");
@@ -124,7 +135,7 @@ int main(int argc, char *argv[]) {
     if (row1[0] != '\0') {
       rgb_matrix::DrawText(offscreen, font, x_orig,
                            y_orig + font.height() + font.baseline(),
-                           color, NULL, row1, letter_spacing);
+                           color1, NULL, row1, letter_spacing);
     }
     // Atomic, flicker-free swap onto the panel.
     offscreen = matrix->SwapOnVSync(offscreen);
