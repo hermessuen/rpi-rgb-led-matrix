@@ -113,7 +113,12 @@ def _fetch_row(row, count=2):
         if feed is None:
             return f"{line}:err"
 
-        trips = feed.filter_trips(line_id=line, headed_for_stop_id=stop_id, underway=True)
+        # No underway=True filter: that would drop trains still sitting at their
+        # terminal, which on the G is nearly every train more than ~5 min from
+        # Metropolitan Av (Court Sq is only a few stops away) -- the row went
+        # permanently blank. Not-yet-departed times are predictions, so they can
+        # shift by a minute or two until the train actually leaves.
+        trips = feed.filter_trips(line_id=line, headed_for_stop_id=stop_id)
         now = time.time()
         times = []
         for trip in trips:
